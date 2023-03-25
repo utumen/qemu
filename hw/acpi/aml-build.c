@@ -1728,7 +1728,7 @@ void acpi_table_begin(AcpiTable *desc, GArray *array)
     /* OEM Table ID */
     build_append_padded_str(array, desc->oem_table_id, 8, '\0');
     build_append_int_noprefix(array, 1, 4); /* OEM Revision */
-    g_array_append_vals(array, ACPI_BUILD_APPNAME8, 4); /* Creator ID */
+    g_array_append_vals(array, ACPI_BUILD_CREATORID, 4); /* Creator ID */
     build_append_int_noprefix(array, 1, 4); /* Creator Revision */
 }
 
