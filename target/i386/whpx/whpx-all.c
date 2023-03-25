@@ -906,7 +906,18 @@ static int whpx_handle_mmio(CPUState *cpu, WHV_MEMORY_ACCESS_CONTEXT *ctx)
 
     if (!emu_status.EmulationSuccessful) {
         error_report("WHPX: Failed to emulate MMIO access with"
-                     " EmulatorReturnStatus: %u", emu_status.AsUINT32);
+                     " EmulatorReturnStatus: %u (%s%s%s%s%s%s%s%s%s%s)",
+            emu_status.AsUINT32,
+            (emu_status.EmulationSuccessful ? "EmulationSuccessful " : ""),
+            (emu_status.InternalEmulationFailure ? "InternalEmulationFailure " : ""),
+            (emu_status.IoPortCallbackFailed ? "IoPortCallbackFailed " : ""),
+            (emu_status.MemoryCallbackFailed ? "MemoryCallbackFailed " : ""),
+            (emu_status.TranslateGvaPageCallbackFailed ? "TranslateGvaPageCallbackFailed " : ""),
+            (emu_status.TranslateGvaPageCallbackGpaIsNotAligned ? "TranslateGvaPageCallbackGpaIsNotAligned " : ""),
+            (emu_status.GetVirtualProcessorRegistersCallbackFailed ? "GetVirtualProcessorRegistersCallbackFailed " : ""),
+            (emu_status.SetVirtualProcessorRegistersCallbackFailed ? "SetVirtualProcessorRegistersCallbackFailed " : ""),
+            (emu_status.InterruptCausedIntercept ? "InterruptCausedIntercept " : ""),
+            (emu_status.GuestCannotBeFaulted ? "GuestCannotBeFaulted " : ""));
         return -1;
     }
 
@@ -2360,11 +2371,18 @@ static void whpx_process_section(MemoryRegionSection *section, int add)
     MemoryRegion *mr = section->mr;
     hwaddr start_pa = section->offset_within_address_space;
     ram_addr_t size = int128_get64(section->size);
+    bool is_romd = false;
     unsigned int delta;
     uint64_t host_va;
 
     if (!memory_region_is_ram(mr)) {
-        return;
+        if (memory_region_is_romd(mr)) {
+            is_romd = true;
+            warn_report("WHPX ROMD region 0x%016" PRIx64 "->0x%016" PRIx64,
+                        start_pa, start_pa + size);
+        } else {
+            return;
+        }
     }
 
     delta = qemu_real_host_page_size() - (start_pa & ~qemu_real_host_page_mask());
@@ -2383,7 +2401,7 @@ static void whpx_process_section(MemoryRegionSection *section, int add)
             + section->offset_within_region + delta;
 
     whpx_update_mapping(start_pa, size, (void *)(uintptr_t)host_va, add,
-                        memory_region_is_rom(mr), mr->name);
+                        memory_region_is_rom(mr) || is_romd, mr->name);
 }
 
 static void whpx_region_add(MemoryListener *listener,
