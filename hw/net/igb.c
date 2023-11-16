@@ -78,6 +78,7 @@ struct IGBState {
     uint32_t ioaddr;
 
     IGBCore core;
+    bool has_flr;
 };
 
 #define IGB_CAP_SRIOV_OFFSET    (0x160)
@@ -101,6 +102,9 @@ static void igb_write_config(PCIDevice *dev, uint32_t addr,
 
     trace_igb_write_config(addr, val, len);
     pci_default_write_config(dev, addr, val, len);
+    if (s->has_flr) {
+        pcie_cap_flr_write_config(dev, addr, val, len);
+    }
 
     if (range_covers_byte(addr, len, PCI_COMMAND) &&
         (dev->config[PCI_COMMAND] & PCI_COMMAND_MASTER)) {
@@ -120,6 +124,12 @@ igb_mmio_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     IGBState *s = opaque;
     igb_core_write(&s->core, addr, val, size);
+}
+
+void igb_vf_reset(void *opaque, uint16_t vfn)
+{
+    IGBState *s = opaque;
+    igb_core_vf_reset(&s->core, vfn);
 }
 
 static bool
@@ -427,22 +437,26 @@ static void igb_pci_realize(PCIDevice *pci_dev, Error **errp)
     }
 
     /* PCIe extended capabilities (in order) */
+    if (s->has_flr) {
+        pcie_cap_flr_init(pci_dev);
+    }
+
     if (pcie_aer_init(pci_dev, 1, 0x100, 0x40, errp) < 0) {
         hw_error("Failed to initialize AER capability");
     }
 
-    pcie_ari_init(pci_dev, 0x150, 1);
+    pcie_ari_init(pci_dev, 0x150);
 
-    pcie_sriov_pf_init(pci_dev, IGB_CAP_SRIOV_OFFSET, "igbvf",
+    pcie_sriov_pf_init(pci_dev, IGB_CAP_SRIOV_OFFSET, TYPE_IGBVF,
         IGB_82576_VF_DEV_ID, IGB_MAX_VF_FUNCTIONS, IGB_MAX_VF_FUNCTIONS,
         IGB_VF_OFFSET, IGB_VF_STRIDE);
 
-    pcie_sriov_pf_init_vf_bar(pci_dev, 0,
+    pcie_sriov_pf_init_vf_bar(pci_dev, IGBVF_MMIO_BAR_IDX,
         PCI_BASE_ADDRESS_MEM_TYPE_64 | PCI_BASE_ADDRESS_MEM_PREFETCH,
-        16 * KiB);
-    pcie_sriov_pf_init_vf_bar(pci_dev, 3,
+        IGBVF_MMIO_SIZE);
+    pcie_sriov_pf_init_vf_bar(pci_dev, IGBVF_MSIX_BAR_IDX,
         PCI_BASE_ADDRESS_MEM_TYPE_64 | PCI_BASE_ADDRESS_MEM_PREFETCH,
-        16 * KiB);
+        IGBVF_MSIX_SIZE);
 
     igb_init_net_peer(s, pci_dev, macaddr);
 
@@ -502,16 +516,28 @@ static int igb_post_load(void *opaque, int version_id)
     return igb_core_post_load(&s->core);
 }
 
-static const VMStateDescription igb_vmstate_tx = {
-    .name = "igb-tx",
+static const VMStateDescription igb_vmstate_tx_ctx = {
+    .name = "igb-tx-ctx",
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (VMStateField[]) {
-        VMSTATE_UINT16(vlan, struct igb_tx),
-        VMSTATE_UINT16(mss, struct igb_tx),
-        VMSTATE_BOOL(tse, struct igb_tx),
-        VMSTATE_BOOL(ixsm, struct igb_tx),
-        VMSTATE_BOOL(txsm, struct igb_tx),
+        VMSTATE_UINT32(vlan_macip_lens, struct e1000_adv_tx_context_desc),
+        VMSTATE_UINT32(seqnum_seed, struct e1000_adv_tx_context_desc),
+        VMSTATE_UINT32(type_tucmd_mlhl, struct e1000_adv_tx_context_desc),
+        VMSTATE_UINT32(mss_l4len_idx, struct e1000_adv_tx_context_desc),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const VMStateDescription igb_vmstate_tx = {
+    .name = "igb-tx",
+    .version_id = 2,
+    .minimum_version_id = 2,
+    .fields = (VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(ctx, struct igb_tx, 2, 0, igb_vmstate_tx_ctx,
+                             struct e1000_adv_tx_context_desc),
+        VMSTATE_UINT32(first_cmd_type_len, struct igb_tx),
+        VMSTATE_UINT32(first_olinfo_status, struct igb_tx),
         VMSTATE_BOOL(first, struct igb_tx),
         VMSTATE_BOOL(skip_cp, struct igb_tx),
         VMSTATE_END_OF_LIST()
@@ -570,6 +596,7 @@ static const VMStateDescription igb_vmstate = {
 
 static Property igb_properties[] = {
     DEFINE_NIC_PROPERTIES(IGBState, conf),
+    DEFINE_PROP_BOOL("x-pcie-flr-init", IGBState, has_flr, true),
     DEFINE_PROP_END_OF_LIST(),
 };
 

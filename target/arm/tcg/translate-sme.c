@@ -18,15 +18,8 @@
  */
 
 #include "qemu/osdep.h"
-#include "cpu.h"
-#include "tcg/tcg-op.h"
-#include "tcg/tcg-op-gvec.h"
-#include "tcg/tcg-gvec-desc.h"
 #include "translate.h"
-#include "exec/helper-gen.h"
 #include "translate-a64.h"
-#include "fpu/softfloat.h"
-
 
 /*
  * Include the generated decoder.
@@ -97,8 +90,23 @@ static TCGv_ptr get_tile_rowcol(DisasContext *s, int esz, int rs,
     /* Add the byte offset to env to produce the final pointer. */
     addr = tcg_temp_new_ptr();
     tcg_gen_ext_i32_ptr(addr, tmp);
-    tcg_gen_add_ptr(addr, addr, cpu_env);
+    tcg_gen_add_ptr(addr, addr, tcg_env);
 
+    return addr;
+}
+
+/*
+ * Resolve tile.size[0] to a host pointer.
+ * Used by e.g. outer product insns where we require the entire tile.
+ */
+static TCGv_ptr get_tile(DisasContext *s, int esz, int tile)
+{
+    TCGv_ptr addr = tcg_temp_new_ptr();
+    int offset;
+
+    offset = tile * sizeof(ARMVectorReg) + offsetof(CPUARMState, zarray);
+
+    tcg_gen_addi_ptr(addr, tcg_env, offset);
     return addr;
 }
 
@@ -108,7 +116,7 @@ static bool trans_ZERO(DisasContext *s, arg_ZERO *a)
         return false;
     }
     if (sme_za_enabled_check(s)) {
-        gen_helper_sme_zero(cpu_env, tcg_constant_i32(a->imm),
+        gen_helper_sme_zero(tcg_env, tcg_constant_i32(a->imm),
                             tcg_constant_i32(streaming_vec_reg_size(s)));
     }
     return true;
@@ -229,7 +237,7 @@ static bool trans_LDST1(DisasContext *s, arg_LDST1 *a)
     svl = streaming_vec_reg_size(s);
     desc = simd_desc(svl, svl, desc);
 
-    fns[a->esz][be][a->v][mte][a->st](cpu_env, t_za, t_pg, addr,
+    fns[a->esz][be][a->v][mte][a->st](tcg_env, t_za, t_pg, addr,
                                       tcg_constant_i32(desc));
     return true;
 }
@@ -267,8 +275,7 @@ static bool do_adda(DisasContext *s, arg_adda *a, MemOp esz,
         return true;
     }
 
-    /* Sum XZR+zad to find ZAd. */
-    za = get_tile_rowcol(s, esz, 31, a->zad, false);
+    za = get_tile(s, esz, a->zad);
     zn = vec_full_reg_ptr(s, a->zn);
     pn = pred_full_reg_ptr(s, a->pn);
     pm = pred_full_reg_ptr(s, a->pm);
@@ -293,8 +300,7 @@ static bool do_outprod(DisasContext *s, arg_op *a, MemOp esz,
         return true;
     }
 
-    /* Sum XZR+zad to find ZAd. */
-    za = get_tile_rowcol(s, esz, 31, a->zad, false);
+    za = get_tile(s, esz, a->zad);
     zn = vec_full_reg_ptr(s, a->zn);
     zm = vec_full_reg_ptr(s, a->zm);
     pn = pred_full_reg_ptr(s, a->pn);
@@ -315,8 +321,7 @@ static bool do_outprod_fpst(DisasContext *s, arg_op *a, MemOp esz,
         return true;
     }
 
-    /* Sum XZR+zad to find ZAd. */
-    za = get_tile_rowcol(s, esz, 31, a->zad, false);
+    za = get_tile(s, esz, a->zad);
     zn = vec_full_reg_ptr(s, a->zn);
     zm = vec_full_reg_ptr(s, a->zm);
     pn = pred_full_reg_ptr(s, a->pn);

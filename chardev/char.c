@@ -806,6 +806,9 @@ QemuOptsList qemu_chardev_opts = {
             .name = "path",
             .type = QEMU_OPT_STRING,
         },{
+            .name = "input-path",
+            .type = QEMU_OPT_STRING,
+        },{
             .name = "host",
             .type = QEMU_OPT_STRING,
         },{
@@ -1112,7 +1115,7 @@ ChardevReturn *qmp_chardev_change(const char *id, ChardevBackend *backend,
         return NULL;
     }
 
-    /* change successfull, clean up */
+    /* change successful, clean up */
     chr_new->handover_yank_instance = false;
 
     /*

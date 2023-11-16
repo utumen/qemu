@@ -149,7 +149,7 @@ static void watch_remove(SpiceWatch *watch)
     qemu_set_fd_handler(watch->fd, NULL, NULL, NULL);
 #ifdef WIN32
     /* SOCKET is owned by spice */
-    qemu_close_to_socket(watch->fd);
+    qemu_close_socket_osfhandle(watch->fd);
 #endif
     g_free(watch);
 }
@@ -821,8 +821,7 @@ static void qemu_spice_init(void)
     };
     using_spice = 1;
 
-    migration_state.notify = migration_state_notifier;
-    add_migration_state_change_notifier(&migration_state);
+    migration_add_notifier(&migration_state, migration_state_notifier);
     spice_migrate.base.sif = &migrate_interface.base;
     qemu_spice.add_interface(&spice_migrate.base);
 
