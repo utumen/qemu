@@ -188,7 +188,7 @@ static const char *names[] = {
 #define LSI_TAG_VALID     (1 << 16)
 
 /* Maximum instructions to process. */
-#define LSI_MAX_INSN    100
+#define LSI_MAX_INSN    500
 
 typedef struct lsi_request {
     SCSIRequest *req;
@@ -227,7 +227,7 @@ struct LSIState {
     AddressSpace pci_io_as;
     QEMUTimer *scripts_timer;
 
-    int carry; /* ??? Should this be an a visible register somewhere?  */
+    int carry; /* ??? Should this be in a visible register somewhere?  */
     int status;
     int msg_action;
     int msg_len;
@@ -927,13 +927,18 @@ static void lsi_do_msgin(LSIState *s)
     assert(len > 0 && len <= LSI_MAX_MSGIN_LEN);
     if (len > s->dbc)
         len = s->dbc;
-    pci_dma_write(PCI_DEVICE(s), s->dnad, s->msg, len);
-    /* Linux drivers rely on the last byte being in the SIDL.  */
-    s->sidl = s->msg[len - 1];
-    s->msg_len -= len;
-    if (s->msg_len) {
-        memmove(s->msg, s->msg + len, s->msg_len);
-    } else {
+
+    if (len) {
+        pci_dma_write(PCI_DEVICE(s), s->dnad, s->msg, len);
+        /* Linux drivers rely on the last byte being in the SIDL.  */
+        s->sidl = s->msg[len - 1];
+        s->msg_len -= len;
+        if (s->msg_len) {
+            memmove(s->msg, s->msg + len, s->msg_len);
+        }
+    }
+
+    if (!s->msg_len) {
         /* ??? Check if ATN (not yet implemented) is asserted and maybe
            switch to PHASE_MO.  */
         switch (s->msg_action) {
@@ -2381,7 +2386,7 @@ static void lsi_class_init(ObjectClass *klass, void *data)
     k->device_id = PCI_DEVICE_ID_LSI_53C895A;
     k->class_id = PCI_CLASS_STORAGE_SCSI;
     k->subsystem_id = 0x1000;
-    dc->reset = lsi_scsi_reset;
+    device_class_set_legacy_reset(dc, lsi_scsi_reset);
     dc->vmsd = &vmstate_lsi_scsi;
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 }

@@ -44,7 +44,7 @@
 #include "kvm_riscv.h"
 #include "sbi_ecall_interface.h"
 #include "chardev/char-fe.h"
-#include "migration/migration.h"
+#include "migration/misc.h"
 #include "sysemu/runstate.h"
 #include "hw/riscv/numa.h"
 
@@ -281,6 +281,10 @@ static KVMCPUConfig kvm_multi_ext_cfgs[] = {
     KVM_EXT_CFG("zihintntl", ext_zihintntl, KVM_RISCV_ISA_EXT_ZIHINTNTL),
     KVM_EXT_CFG("zihintpause", ext_zihintpause, KVM_RISCV_ISA_EXT_ZIHINTPAUSE),
     KVM_EXT_CFG("zihpm", ext_zihpm, KVM_RISCV_ISA_EXT_ZIHPM),
+    KVM_EXT_CFG("zimop", ext_zimop, KVM_RISCV_ISA_EXT_ZIMOP),
+    KVM_EXT_CFG("zcmop", ext_zcmop, KVM_RISCV_ISA_EXT_ZCMOP),
+    KVM_EXT_CFG("zacas", ext_zacas, KVM_RISCV_ISA_EXT_ZACAS),
+    KVM_EXT_CFG("zawrs", ext_zawrs, KVM_RISCV_ISA_EXT_ZAWRS),
     KVM_EXT_CFG("zfa", ext_zfa, KVM_RISCV_ISA_EXT_ZFA),
     KVM_EXT_CFG("zfh", ext_zfh, KVM_RISCV_ISA_EXT_ZFH),
     KVM_EXT_CFG("zfhmin", ext_zfhmin, KVM_RISCV_ISA_EXT_ZFHMIN),
@@ -291,6 +295,10 @@ static KVMCPUConfig kvm_multi_ext_cfgs[] = {
     KVM_EXT_CFG("zbkc", ext_zbkc, KVM_RISCV_ISA_EXT_ZBKC),
     KVM_EXT_CFG("zbkx", ext_zbkx, KVM_RISCV_ISA_EXT_ZBKX),
     KVM_EXT_CFG("zbs", ext_zbs, KVM_RISCV_ISA_EXT_ZBS),
+    KVM_EXT_CFG("zca", ext_zca, KVM_RISCV_ISA_EXT_ZCA),
+    KVM_EXT_CFG("zcb", ext_zcb, KVM_RISCV_ISA_EXT_ZCB),
+    KVM_EXT_CFG("zcd", ext_zcd, KVM_RISCV_ISA_EXT_ZCD),
+    KVM_EXT_CFG("zcf", ext_zcf, KVM_RISCV_ISA_EXT_ZCF),
     KVM_EXT_CFG("zknd", ext_zknd, KVM_RISCV_ISA_EXT_ZKND),
     KVM_EXT_CFG("zkne", ext_zkne, KVM_RISCV_ISA_EXT_ZKNE),
     KVM_EXT_CFG("zknh", ext_zknh, KVM_RISCV_ISA_EXT_ZKNH),
@@ -298,6 +306,7 @@ static KVMCPUConfig kvm_multi_ext_cfgs[] = {
     KVM_EXT_CFG("zksed", ext_zksed, KVM_RISCV_ISA_EXT_ZKSED),
     KVM_EXT_CFG("zksh", ext_zksh, KVM_RISCV_ISA_EXT_ZKSH),
     KVM_EXT_CFG("zkt", ext_zkt, KVM_RISCV_ISA_EXT_ZKT),
+    KVM_EXT_CFG("ztso", ext_ztso, KVM_RISCV_ISA_EXT_ZTSO),
     KVM_EXT_CFG("zvbb", ext_zvbb, KVM_RISCV_ISA_EXT_ZVBB),
     KVM_EXT_CFG("zvbc", ext_zvbc, KVM_RISCV_ISA_EXT_ZVBC),
     KVM_EXT_CFG("zvfh", ext_zvfh, KVM_RISCV_ISA_EXT_ZVFH),
@@ -409,6 +418,12 @@ static KVMCPUConfig kvm_v_vlenb = {
                    KVM_REG_RISCV_VECTOR_CSR_REG(vlenb)
 };
 
+static KVMCPUConfig kvm_sbi_dbcn = {
+    .name = "sbi_dbcn",
+    .kvm_reg_id = KVM_REG_RISCV | KVM_REG_SIZE_U64 |
+                  KVM_REG_RISCV_SBI_EXT | KVM_RISCV_SBI_EXT_DBCN
+};
+
 static void kvm_riscv_update_cpu_cfg_isa_ext(RISCVCPU *cpu, CPUState *cs)
 {
     CPURISCVState *env = &cpu->env;
@@ -427,10 +442,14 @@ static void kvm_riscv_update_cpu_cfg_isa_ext(RISCVCPU *cpu, CPUState *cs)
         reg = kvm_cpu_cfg_get(cpu, multi_ext_cfg);
         ret = kvm_set_one_reg(cs, id, &reg);
         if (ret != 0) {
-            error_report("Unable to %s extension %s in KVM, error %d",
-                         reg ? "enable" : "disable",
-                         multi_ext_cfg->name, ret);
-            exit(EXIT_FAILURE);
+            if (!reg && ret == -EINVAL) {
+                warn_report("KVM cannot disable extension %s",
+                            multi_ext_cfg->name);
+            } else {
+                error_report("Unable to enable extension %s in KVM, error %d",
+                             multi_ext_cfg->name, ret);
+                exit(EXIT_FAILURE);
+            }
         }
     }
 }
@@ -729,7 +748,7 @@ static void kvm_riscv_put_regs_timer(CPUState *cs)
      * frequency. Therefore, we should check whether they are the same here
      * during the migration.
      */
-    if (migration_is_running(migrate_get_current()->state)) {
+    if (migration_is_running()) {
         KVM_RISCV_GET_TIMER(cs, frequency, reg);
         if (reg != env->kvm_timer_frequency) {
             error_report("Dst Hosts timer frequency != Src Hosts");
@@ -737,6 +756,15 @@ static void kvm_riscv_put_regs_timer(CPUState *cs)
     }
 
     env->kvm_timer_dirty = false;
+}
+
+uint64_t kvm_riscv_get_timebase_frequency(CPUState *cs)
+{
+    uint64_t reg;
+
+    KVM_RISCV_GET_TIMER(cs, frequency, reg);
+
+    return reg;
 }
 
 static int kvm_riscv_get_regs_vector(CPUState *cs)
@@ -1028,6 +1056,20 @@ static int uint64_cmp(const void *a, const void *b)
     return 0;
 }
 
+static void kvm_riscv_check_sbi_dbcn_support(RISCVCPU *cpu,
+                                             KVMScratchCPU *kvmcpu,
+                                             struct kvm_reg_list *reglist)
+{
+    struct kvm_reg_list *reg_search;
+
+    reg_search = bsearch(&kvm_sbi_dbcn.kvm_reg_id, reglist->reg, reglist->n,
+                         sizeof(uint64_t), uint64_cmp);
+
+    if (reg_search) {
+        kvm_sbi_dbcn.supported = true;
+    }
+}
+
 static void kvm_riscv_read_vlenb(RISCVCPU *cpu, KVMScratchCPU *kvmcpu,
                                  struct kvm_reg_list *reglist)
 {
@@ -1045,8 +1087,8 @@ static void kvm_riscv_read_vlenb(RISCVCPU *cpu, KVMScratchCPU *kvmcpu,
 
         ret = ioctl(kvmcpu->cpufd, KVM_GET_ONE_REG, &reg);
         if (ret != 0) {
-            error_report("Unable to read vlenb register, error code: %s",
-                         strerrorname_np(errno));
+            error_report("Unable to read vlenb register, error code: %d",
+                         errno);
             exit(EXIT_FAILURE);
         }
 
@@ -1133,6 +1175,8 @@ static void kvm_riscv_init_multiext_cfg(RISCVCPU *cpu, KVMScratchCPU *kvmcpu)
     if (riscv_has_ext(&cpu->env, RVV)) {
         kvm_riscv_read_vlenb(cpu, kvmcpu, reglist);
     }
+
+    kvm_riscv_check_sbi_dbcn_support(cpu, kvmcpu, reglist);
 }
 
 static void riscv_init_kvm_registers(Object *cpu_obj)
@@ -1155,7 +1199,7 @@ const KVMCapabilityInfo kvm_arch_required_capabilities[] = {
     KVM_CAP_LAST_INFO
 };
 
-int kvm_arch_get_registers(CPUState *cs)
+int kvm_arch_get_registers(CPUState *cs, Error **errp)
 {
     int ret = 0;
 
@@ -1200,7 +1244,7 @@ int kvm_riscv_sync_mpstate_to_kvm(RISCVCPU *cpu, int state)
     return 0;
 }
 
-int kvm_arch_put_registers(CPUState *cs, int level)
+int kvm_arch_put_registers(CPUState *cs, int level, Error **errp)
 {
     int ret = 0;
 
@@ -1307,6 +1351,17 @@ static int kvm_vcpu_set_machine_ids(RISCVCPU *cpu, CPUState *cs)
     return ret;
 }
 
+static int kvm_vcpu_enable_sbi_dbcn(RISCVCPU *cpu, CPUState *cs)
+{
+    target_ulong reg = 1;
+
+    if (!kvm_sbi_dbcn.supported) {
+        return 0;
+    }
+
+    return kvm_set_one_reg(cs, kvm_sbi_dbcn.kvm_reg_id, &reg);
+}
+
 int kvm_arch_init_vcpu(CPUState *cs)
 {
     int ret = 0;
@@ -1323,6 +1378,8 @@ int kvm_arch_init_vcpu(CPUState *cs)
 
     kvm_riscv_update_cpu_misa_ext(cpu, cs);
     kvm_riscv_update_cpu_cfg_isa_ext(cpu, cs);
+
+    ret = kvm_vcpu_enable_sbi_dbcn(cpu, cs);
 
     return ret;
 }
@@ -1381,6 +1438,79 @@ bool kvm_arch_stop_on_emulation_error(CPUState *cs)
     return true;
 }
 
+static void kvm_riscv_handle_sbi_dbcn(CPUState *cs, struct kvm_run *run)
+{
+    g_autofree uint8_t *buf = NULL;
+    RISCVCPU *cpu = RISCV_CPU(cs);
+    target_ulong num_bytes;
+    uint64_t addr;
+    unsigned char ch;
+    int ret;
+
+    switch (run->riscv_sbi.function_id) {
+    case SBI_EXT_DBCN_CONSOLE_READ:
+    case SBI_EXT_DBCN_CONSOLE_WRITE:
+        num_bytes = run->riscv_sbi.args[0];
+
+        if (num_bytes == 0) {
+            run->riscv_sbi.ret[0] = SBI_SUCCESS;
+            run->riscv_sbi.ret[1] = 0;
+            break;
+        }
+
+        addr = run->riscv_sbi.args[1];
+
+        /*
+         * Handle the case where a 32 bit CPU is running in a
+         * 64 bit addressing env.
+         */
+        if (riscv_cpu_mxl(&cpu->env) == MXL_RV32) {
+            addr |= (uint64_t)run->riscv_sbi.args[2] << 32;
+        }
+
+        buf = g_malloc0(num_bytes);
+
+        if (run->riscv_sbi.function_id == SBI_EXT_DBCN_CONSOLE_READ) {
+            ret = qemu_chr_fe_read_all(serial_hd(0)->be, buf, num_bytes);
+            if (ret < 0) {
+                error_report("SBI_EXT_DBCN_CONSOLE_READ: error when "
+                             "reading chardev");
+                exit(1);
+            }
+
+            cpu_physical_memory_write(addr, buf, ret);
+        } else {
+            cpu_physical_memory_read(addr, buf, num_bytes);
+
+            ret = qemu_chr_fe_write_all(serial_hd(0)->be, buf, num_bytes);
+            if (ret < 0) {
+                error_report("SBI_EXT_DBCN_CONSOLE_WRITE: error when "
+                             "writing chardev");
+                exit(1);
+            }
+        }
+
+        run->riscv_sbi.ret[0] = SBI_SUCCESS;
+        run->riscv_sbi.ret[1] = ret;
+        break;
+    case SBI_EXT_DBCN_CONSOLE_WRITE_BYTE:
+        ch = run->riscv_sbi.args[0];
+        ret = qemu_chr_fe_write(serial_hd(0)->be, &ch, sizeof(ch));
+
+        if (ret < 0) {
+            error_report("SBI_EXT_DBCN_CONSOLE_WRITE_BYTE: error when "
+                         "writing chardev");
+            exit(1);
+        }
+
+        run->riscv_sbi.ret[0] = SBI_SUCCESS;
+        run->riscv_sbi.ret[1] = 0;
+        break;
+    default:
+        run->riscv_sbi.ret[0] = SBI_ERR_NOT_SUPPORTED;
+    }
+}
+
 static int kvm_riscv_handle_sbi(CPUState *cs, struct kvm_run *run)
 {
     int ret = 0;
@@ -1399,6 +1529,9 @@ static int kvm_riscv_handle_sbi(CPUState *cs, struct kvm_run *run)
         }
         ret = 0;
         break;
+    case SBI_EXT_DBCN:
+        kvm_riscv_handle_sbi_dbcn(cs, run);
+        break;
     default:
         qemu_log_mask(LOG_UNIMP,
                       "%s: un-handled SBI EXIT, specific reasons is %lu\n",
@@ -1409,12 +1542,57 @@ static int kvm_riscv_handle_sbi(CPUState *cs, struct kvm_run *run)
     return ret;
 }
 
+static int kvm_riscv_handle_csr(CPUState *cs, struct kvm_run *run)
+{
+    target_ulong csr_num = run->riscv_csr.csr_num;
+    target_ulong new_value = run->riscv_csr.new_value;
+    target_ulong write_mask = run->riscv_csr.write_mask;
+    int ret = 0;
+
+    switch (csr_num) {
+    case CSR_SEED:
+        run->riscv_csr.ret_value = riscv_new_csr_seed(new_value, write_mask);
+        break;
+    default:
+        qemu_log_mask(LOG_UNIMP,
+                      "%s: un-handled CSR EXIT for CSR %lx\n",
+                      __func__, csr_num);
+        ret = -1;
+        break;
+    }
+
+    return ret;
+}
+
+static bool kvm_riscv_handle_debug(CPUState *cs)
+{
+    RISCVCPU *cpu = RISCV_CPU(cs);
+    CPURISCVState *env = &cpu->env;
+
+    /* Ensure PC is synchronised */
+    kvm_cpu_synchronize_state(cs);
+
+    if (kvm_find_sw_breakpoint(cs, env->pc)) {
+        return true;
+    }
+
+    return false;
+}
+
 int kvm_arch_handle_exit(CPUState *cs, struct kvm_run *run)
 {
     int ret = 0;
     switch (run->exit_reason) {
     case KVM_EXIT_RISCV_SBI:
         ret = kvm_riscv_handle_sbi(cs, run);
+        break;
+    case KVM_EXIT_RISCV_CSR:
+        ret = kvm_riscv_handle_csr(cs, run);
+        break;
+    case KVM_EXIT_DEBUG:
+        if (kvm_riscv_handle_debug(cs)) {
+            ret = EXCP_DEBUG;
+        }
         break;
     default:
         qemu_log_mask(LOG_UNIMP, "%s: un-handled exit reason %d\n",
@@ -1466,11 +1644,6 @@ void kvm_riscv_set_irq(RISCVCPU *cpu, int irq, int level)
     }
 }
 
-bool kvm_arch_cpu_check_are_resettable(void)
-{
-    return true;
-}
-
 static int aia_mode;
 
 static const char *kvm_aia_mode_str(uint64_t mode)
@@ -1510,9 +1683,9 @@ void kvm_arch_accel_class_init(ObjectClass *oc)
     object_class_property_add_str(oc, "riscv-aia", riscv_get_kvm_aia,
                                   riscv_set_kvm_aia);
     object_class_property_set_description(oc, "riscv-aia",
-                                          "Set KVM AIA mode. Valid values are "
-                                          "emul, hwaccel, and auto. Default "
-                                          "is auto.");
+        "Set KVM AIA mode. Valid values are 'emul', 'hwaccel' and 'auto'. "
+        "Changing KVM AIA modes relies on host support. Defaults to 'auto' "
+        "if the host supports it");
     object_property_set_default_str(object_class_property_find(oc, "riscv-aia"),
                                     "auto");
 }
@@ -1529,6 +1702,7 @@ void kvm_riscv_aia_create(MachineState *machine, uint64_t group_shift,
     uint64_t max_hart_per_socket = 0;
     uint64_t socket, base_hart, hart_count, socket_imsic_base, imsic_addr;
     uint64_t socket_bits, hart_bits, guest_bits;
+    uint64_t max_group_id;
 
     aia_fd = kvm_create_device(kvm_state, KVM_DEV_TYPE_RISCV_AIA, false);
 
@@ -1544,18 +1718,20 @@ void kvm_riscv_aia_create(MachineState *machine, uint64_t group_shift,
         error_report("KVM AIA: failed to get current KVM AIA mode");
         exit(1);
     }
-    qemu_log("KVM AIA: default mode is %s\n",
-             kvm_aia_mode_str(default_aia_mode));
 
     if (default_aia_mode != aia_mode) {
         ret = kvm_device_access(aia_fd, KVM_DEV_RISCV_AIA_GRP_CONFIG,
                                 KVM_DEV_RISCV_AIA_CONFIG_MODE,
                                 &aia_mode, true, NULL);
-        if (ret < 0)
-            warn_report("KVM AIA: failed to set KVM AIA mode");
-        else
-            qemu_log("KVM AIA: set current mode to %s\n",
-                     kvm_aia_mode_str(aia_mode));
+        if (ret < 0) {
+            warn_report("KVM AIA: failed to set KVM AIA mode '%s', using "
+                        "default host mode '%s'",
+                        kvm_aia_mode_str(aia_mode),
+                        kvm_aia_mode_str(default_aia_mode));
+
+            /* failed to change AIA mode, use default */
+            aia_mode = default_aia_mode;
+        }
     }
 
     ret = kvm_device_access(aia_fd, KVM_DEV_RISCV_AIA_GRP_CONFIG,
@@ -1576,7 +1752,8 @@ void kvm_riscv_aia_create(MachineState *machine, uint64_t group_shift,
 
 
     if (socket_count > 1) {
-        socket_bits = find_last_bit(&socket_count, BITS_PER_LONG) + 1;
+        max_group_id = socket_count - 1;
+        socket_bits = find_last_bit(&max_group_id, BITS_PER_LONG) + 1;
         ret = kvm_device_access(aia_fd, KVM_DEV_RISCV_AIA_GRP_CONFIG,
                                 KVM_DEV_RISCV_AIA_CONFIG_GROUP_BITS,
                                 &socket_bits, true, NULL);
@@ -1633,7 +1810,14 @@ void kvm_riscv_aia_create(MachineState *machine, uint64_t group_shift,
         }
     }
 
-    hart_bits = find_last_bit(&max_hart_per_socket, BITS_PER_LONG) + 1;
+
+    if (max_hart_per_socket > 1) {
+        max_hart_per_socket--;
+        hart_bits = find_last_bit(&max_hart_per_socket, BITS_PER_LONG) + 1;
+    } else {
+        hart_bits = 0;
+    }
+
     ret = kvm_device_access(aia_fd, KVM_DEV_RISCV_AIA_GRP_CONFIG,
                             KVM_DEV_RISCV_AIA_CONFIG_HART_BITS,
                             &hart_bits, true, NULL);
@@ -1818,3 +2002,72 @@ static const TypeInfo riscv_kvm_cpu_type_infos[] = {
 };
 
 DEFINE_TYPES(riscv_kvm_cpu_type_infos)
+
+static const uint32_t ebreak_insn = 0x00100073;
+static const uint16_t c_ebreak_insn = 0x9002;
+
+int kvm_arch_insert_sw_breakpoint(CPUState *cs, struct kvm_sw_breakpoint *bp)
+{
+    if (cpu_memory_rw_debug(cs, bp->pc, (uint8_t *)&bp->saved_insn, 2, 0)) {
+        return -EINVAL;
+    }
+
+    if ((bp->saved_insn & 0x3) == 0x3) {
+        if (cpu_memory_rw_debug(cs, bp->pc, (uint8_t *)&bp->saved_insn, 4, 0)
+            || cpu_memory_rw_debug(cs, bp->pc, (uint8_t *)&ebreak_insn, 4, 1)) {
+            return -EINVAL;
+        }
+    } else {
+        if (cpu_memory_rw_debug(cs, bp->pc, (uint8_t *)&c_ebreak_insn, 2, 1)) {
+            return -EINVAL;
+        }
+    }
+
+    return 0;
+}
+
+int kvm_arch_remove_sw_breakpoint(CPUState *cs, struct kvm_sw_breakpoint *bp)
+{
+    uint32_t ebreak;
+    uint16_t c_ebreak;
+
+    if ((bp->saved_insn & 0x3) == 0x3) {
+        if (cpu_memory_rw_debug(cs, bp->pc, (uint8_t *)&ebreak, 4, 0) ||
+            ebreak != ebreak_insn ||
+            cpu_memory_rw_debug(cs, bp->pc, (uint8_t *)&bp->saved_insn, 4, 1)) {
+            return -EINVAL;
+        }
+    } else {
+        if (cpu_memory_rw_debug(cs, bp->pc, (uint8_t *)&c_ebreak, 2, 0) ||
+            c_ebreak != c_ebreak_insn ||
+            cpu_memory_rw_debug(cs, bp->pc, (uint8_t *)&bp->saved_insn, 2, 1)) {
+            return -EINVAL;
+        }
+    }
+
+    return 0;
+}
+
+int kvm_arch_insert_hw_breakpoint(vaddr addr, vaddr len, int type)
+{
+    /* TODO; To be implemented later. */
+    return -EINVAL;
+}
+
+int kvm_arch_remove_hw_breakpoint(vaddr addr, vaddr len, int type)
+{
+    /* TODO; To be implemented later. */
+    return -EINVAL;
+}
+
+void kvm_arch_remove_all_hw_breakpoints(void)
+{
+    /* TODO; To be implemented later. */
+}
+
+void kvm_arch_update_guest_debug(CPUState *cs, struct kvm_guest_debug *dbg)
+{
+    if (kvm_sw_breakpoints_active(cs)) {
+        dbg->control |= KVM_GUESTDBG_ENABLE;
+    }
+}

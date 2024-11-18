@@ -267,7 +267,6 @@ static void power9_set_irq(void *opaque, int pin, int level)
         break;
     default:
         g_assert_not_reached();
-        return;
     }
 }
 
@@ -633,6 +632,16 @@ void cpu_ppc_store_atbu (CPUPPCState *env, uint32_t value)
                      ((uint64_t)value << 32) | tb);
 }
 
+void cpu_ppc_increase_tb_by_offset(CPUPPCState *env, int64_t offset)
+{
+    env->tb_env->tb_offset += offset;
+}
+
+void cpu_ppc_decrease_tb_by_offset(CPUPPCState *env, int64_t offset)
+{
+    env->tb_env->tb_offset -= offset;
+}
+
 uint64_t cpu_ppc_load_vtb(CPUPPCState *env)
 {
     ppc_tb_t *tb_env = env->tb_env;
@@ -719,7 +728,9 @@ static inline int64_t __cpu_ppc_load_decr(CPUPPCState *env, int64_t now,
     int64_t decr;
 
     n = ns_to_tb(tb_env->decr_freq, now);
-    if (next > n && tb_env->flags & PPC_TIMER_BOOKE) {
+
+    /* BookE timers stop when reaching 0.  */
+    if (next < n && tb_env->flags & PPC_TIMER_BOOKE) {
         decr = 0;
     } else {
         decr = next - n;

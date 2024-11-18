@@ -70,7 +70,7 @@
 #include "sysemu/dma.h"
 #include "hw/ide/pci.h"
 #include "hw/ide/ahci-pci.h"
-#include "ahci_internal.h"
+#include "ahci-internal.h"
 
 #define ICH9_MSI_CAP_OFFSET     0x80
 #define ICH9_SATA_CAP_OFFSET    0xA8
@@ -176,7 +176,7 @@ static void ich_ahci_class_init(ObjectClass *klass, void *data)
     k->revision = 0x02;
     k->class_id = PCI_CLASS_STORAGE_SATA;
     dc->vmsd = &vmstate_ich9_ahci;
-    dc->reset = pci_ich9_reset;
+    device_class_set_legacy_reset(dc, pci_ich9_reset);
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 }
 
